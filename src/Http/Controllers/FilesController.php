@@ -35,16 +35,28 @@ class FilesController
 
         $this->model = $resource->model();
 
-        $fields = $resource->availableFields($request)
-            ->map(
-                fn ($field) => $field instanceof ResourceToolElement
-                    ? $field->assignedPanel
-                    : $field
-            );
+        $fields = $resource->availableFields($request);
 
-        $this->tool = $fields
-            ->whereInstanceOf(NovaS3MultipartUpload::class)
-            ->firstWhere('attribute', $request->route('field'));
+        // 1. Find the ResourceToolElement wrapper first
+        $toolElement = $fields->first(function ($field) use ($request) {
+            if ($field instanceof \Laravel\Nova\ResourceToolElement) {
+                $actualTool = $field->panel ?? null;
+                return $actualTool instanceof NovaS3MultipartUpload &&
+                    $actualTool->attribute == $request->route('field');
+            }
+            return false; // Only interested in ResourceToolElement wrappers
+        });
+
+        // 2. Assign the actual tool from the panel property if the wrapper was found
+        $this->tool = $toolElement ? $toolElement->panel : null;
+
+        // 3. Fallback check if the tool wasn't wrapped
+        if (!$this->tool) {
+            $this->tool = $fields->first(function ($field) use ($request) {
+                return $field instanceof NovaS3MultipartUpload &&
+                    $field->attribute == $request->route('field');
+            });
+        }
 
         abort_unless($this->tool, 404);
     }
@@ -58,7 +70,7 @@ class FilesController
      */
     private function authorize($request, $action)
     {
-        abort_unless($this->tool->element->authorizedToSee($request), 403);
+        abort_unless($this->tool->authorizedToSee($request), 403);
 
         abort_unless($this->tool->{'can' . $action}, 403);
     }
@@ -244,7 +256,6 @@ class FilesController
         if ($this->tool->isArray) {
 
             return [$this->tool->attribute => null];
-
         } elseif ($this->tool->isMultipleArray) {
 
             return [
@@ -252,13 +263,11 @@ class FilesController
                     return $file[$this->tool->fileKeyColumn] === $fileKey;
                 })->values(),
             ];
-
         } else {
 
             return collect($this->tool->fileInfoColumns())->concat($this->tool->fileMetaColumns())->mapWithKeys(function ($column) {
                 return [$column => null];
             })->all();
-
         }
     }
 }
